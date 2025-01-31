@@ -17,7 +17,7 @@
 ## Usage of scan mode
 
 ```
-GhostSPN v1.1 - by @podalirius_
+GhostSPN v1.1 - by Remi GASCOU (Podalirius)
 
 usage: GhostSPN.py scan [-h] [-u USERNAME] [-p PASSWORD] [-d DOMAIN] [--hashes [LMHASH]:NTHASH] [--no-pass] --dc-ip ip address [--ldaps] [-v] [--debug]
 

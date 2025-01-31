@@ -395,7 +395,7 @@ class GhostSPNLookup(object):
 
 
 def parseArgs():
-    print("GhostSPN v%s - by @podalirius_\n" % VERSION)
+    print("GhostSPN v%s - by Remi GASCOU (Podalirius)\n" % VERSION)
 
     parser = argparse.ArgumentParser(description="GhostSPN")
 
