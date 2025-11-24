@@ -15,7 +15,7 @@ from impacket.dcerpc.v5.samr import UF_ACCOUNTDISABLE, UF_TRUSTED_FOR_DELEGATION
 from impacket.ntlm import compute_lmhash, compute_nthash
 import os
 import re
-from sectools.windows.ldap import raw_ldap_query, init_ldap_session
+from sectools.windows.ldap.ldap import raw_ldap_query, init_ldap_session
 from sectools.windows.crypto import parse_lm_nt_hashes
 
 
