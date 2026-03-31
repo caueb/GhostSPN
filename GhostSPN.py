@@ -15,8 +15,46 @@ from impacket.dcerpc.v5.samr import UF_ACCOUNTDISABLE, UF_TRUSTED_FOR_DELEGATION
 from impacket.ntlm import compute_lmhash, compute_nthash
 import os
 import re
+import ssl
+import ldap3
 from sectools.windows.ldap.ldap import raw_ldap_query, init_ldap_session
 from sectools.windows.crypto import parse_lm_nt_hashes
+
+
+def _init_ldap_session(auth_domain, auth_dc_ip, auth_username, auth_password, auth_lm_hash, auth_nt_hash, use_ldaps=False):
+    """Direct ldap3 connection that handles LDAP signing and LDAPS channel binding
+    without relying on sectools' broken fallbacks for ldap3 2.9.1."""
+    if use_ldaps:
+        tls = ldap3.Tls(validate=ssl.CERT_NONE, version=ssl.PROTOCOL_TLSv1_2, ciphers="ALL:@SECLEVEL=0")
+        server = ldap3.Server(auth_dc_ip, port=636, use_ssl=True, get_info=ldap3.ALL, tls=tls)
+        # Try NTLM first, fall back to SIMPLE bind if channel binding is enforced
+        try:
+            conn = ldap3.Connection(
+                server=server,
+                user="%s\\%s" % (auth_domain, auth_username),
+                password=auth_password,
+                authentication=ldap3.NTLM,
+                auto_bind=True,
+            )
+        except ldap3.core.exceptions.LDAPBindError:
+            # NTLM failed (likely channel binding enforced) — use SIMPLE bind over TLS
+            conn = ldap3.Connection(
+                server=server,
+                user="%s@%s" % (auth_username, auth_domain),
+                password=auth_password,
+                authentication=ldap3.SIMPLE,
+                auto_bind=True,
+            )
+    else:
+        server = ldap3.Server(auth_dc_ip, port=389, use_ssl=False, get_info=ldap3.ALL)
+        conn = ldap3.Connection(
+            server=server,
+            user="%s\\%s" % (auth_domain, auth_username),
+            password=auth_password,
+            authentication=ldap3.NTLM,
+            auto_bind=True,
+        )
+    return server, conn
 
 
 VERSION = "1.1"
@@ -109,7 +147,7 @@ class GhostSPNLookup(object):
     Documentation for class GhostSPNLookup
     """
 
-    def __init__(self, auth_domain, auth_username, auth_password, auth_hashes, auth_dc_ip, kerberos_aeskey=None, kerberos_kdcip=None, verbose=False, debug=False):
+    def __init__(self, auth_domain, auth_username, auth_password, auth_hashes, auth_dc_ip, kerberos_aeskey=None, kerberos_kdcip=None, use_ldaps=False, verbose=False, debug=False):
         super(GhostSPNLookup, self).__init__()
         self.verbose = verbose
         self.debug = debug
@@ -127,6 +165,7 @@ class GhostSPNLookup(object):
         self.__kerberos_aes_key = kerberos_aeskey
         self.__kerberos_kdc_ip = kerberos_kdcip
         self.auth_dc_ip = options.dc_ip
+        self.use_ldaps = use_ldaps
 
         self.microsoftdns = MicrosoftDNS(dnsserver=self.auth_dc_ip, verbose=self.debug)
 
@@ -138,15 +177,24 @@ class GhostSPNLookup(object):
         print("[>] Searching for Ghost SPNs ...")
 
         ldap_query = "(&(servicePrincipalName=*))"
-        results = raw_ldap_query(
-            query=ldap_query,
+        auth_lm_hash, auth_nt_hash = parse_lm_nt_hashes(self.auth_hashes)
+        ldap_server, ldap_session = _init_ldap_session(
             auth_domain=self.auth_domain,
             auth_dc_ip=self.auth_dc_ip,
             auth_username=self.auth_username,
             auth_password=self.auth_password,
-            auth_hashes=self.auth_hashes,
-            attributes=["sAMAccountName", "servicePrincipalName", "userPrincipalName", "userAccountControl", "distinguishedName"]
+            auth_lm_hash=auth_lm_hash,
+            auth_nt_hash=auth_nt_hash,
+            use_ldaps=self.use_ldaps
         )
+        searchbase = ldap_server.info.other["defaultNamingContext"]
+        attributes = ["sAMAccountName", "servicePrincipalName", "userPrincipalName", "userAccountControl", "distinguishedName"]
+        ldapresults = list(ldap_session.extend.standard.paged_search(searchbase, ldap_query, attributes=attributes))
+        results = {}
+        for entry in ldapresults:
+            if entry["type"] != "searchResEntry":
+                continue
+            results[entry["dn"]] = entry["attributes"]
 
         if len(results) != 0:
             for dn, userdata in results.items():
@@ -254,14 +302,14 @@ class GhostSPNLookup(object):
     def check_wildcard_dns(self):
         auth_lm_hash, auth_nt_hash = parse_lm_nt_hashes(self.auth_hashes)
 
-        ldap_server, ldap_session = init_ldap_session(
+        ldap_server, ldap_session = _init_ldap_session(
             auth_domain=self.auth_domain,
             auth_dc_ip=self.auth_dc_ip,
             auth_username=self.auth_username,
             auth_password=self.auth_password,
             auth_lm_hash=auth_lm_hash,
             auth_nt_hash=auth_nt_hash,
-            use_ldaps=False
+            use_ldaps=self.use_ldaps
         )
 
         target_dn = "CN=MicrosoftDNS,DC=DomainDnsZones," + ldap_server.info.other["rootDomainNamingContext"][0]
@@ -460,6 +508,7 @@ if __name__ == '__main__':
             auth_username=options.username,
             auth_password=options.password,
             auth_hashes=options.hashes,
+            use_ldaps=options.ldaps,
             verbose=options.verbose,
             debug=options.debug
         )
@@ -478,6 +527,7 @@ if __name__ == '__main__':
             auth_hashes=options.hashes,
             kerberos_aeskey=options.aes_key,
             kerberos_kdcip=options.kdc_ip,
+            use_ldaps=options.ldaps,
             verbose=options.verbose,
             debug=options.debug
         )
